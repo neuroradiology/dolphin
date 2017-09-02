@@ -4,6 +4,8 @@
 
 // http://www.nvidia.com/object/General_FAQ.html#t6 !!!!!
 
+#include "VideoCommon/PixelEngine.h"
+
 #include <mutex>
 
 #include "Common/ChunkFile.h"
@@ -15,13 +17,15 @@
 #include "Core/HW/MMIO.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "VideoCommon/BoundingBox.h"
-#include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/Fifo.h"
-#include "VideoCommon/PixelEngine.h"
+#include "VideoCommon/PerfQueryBase.h"
+#include "VideoCommon/PixelShaderManager.h"
+#include "VideoCommon/VideoBackendBase.h"
 
 namespace PixelEngine
 {
-union UPEZConfReg {
+union UPEZConfReg
+{
   u16 Hex;
   struct
   {
@@ -32,7 +36,8 @@ union UPEZConfReg {
   };
 };
 
-union UPEAlphaConfReg {
+union UPEAlphaConfReg
+{
   u16 Hex;
   struct
   {
@@ -48,7 +53,8 @@ union UPEAlphaConfReg {
   };
 };
 
-union UPEDstAlphaConfReg {
+union UPEDstAlphaConfReg
+{
   u16 Hex;
   struct
   {
@@ -58,7 +64,8 @@ union UPEDstAlphaConfReg {
   };
 };
 
-union UPEAlphaModeConfReg {
+union UPEAlphaModeConfReg
+{
   u16 Hex;
   struct
   {
@@ -68,7 +75,8 @@ union UPEAlphaModeConfReg {
 };
 
 // fifo Control Register
-union UPECtrlReg {
+union UPECtrlReg
+{
   struct
   {
     u16 PETokenEnable : 1;
@@ -219,14 +227,14 @@ void RegisterMMIO(MMIO::Mapping* mmio, u32 base)
                  }));
 
   // Token register, readonly.
-  mmio->Register(base | PE_TOKEN_REG, MMIO::ComplexRead<u16>([](u32) { return s_token; }),
-                 MMIO::InvalidWrite<u16>());
+  mmio->Register(base | PE_TOKEN_REG, MMIO::DirectRead<u16>(&s_token), MMIO::InvalidWrite<u16>());
 
   // BBOX registers, readonly and need to update a flag.
   for (int i = 0; i < 4; ++i)
   {
     mmio->Register(base | (PE_BBOX_LEFT + 2 * i), MMIO::ComplexRead<u16>([i](u32) {
                      BoundingBox::active = false;
+                     PixelShaderManager::SetBoundingBoxActive(false);
                      return g_video_backend->Video_GetBoundingBox(i);
                    }),
                    MMIO::InvalidWrite<u16>());
@@ -288,7 +296,7 @@ static void RaiseEvent()
 // THIS IS EXECUTED FROM VIDEO THREAD
 void SetToken(const u16 token, const bool interrupt)
 {
-  INFO_LOG(PIXELENGINE, "VIDEO Backend raises INT_CAUSE_PE_TOKEN (btw, token: %04x)", token);
+  DEBUG_LOG(PIXELENGINE, "VIDEO Backend raises INT_CAUSE_PE_TOKEN (btw, token: %04x)", token);
 
   std::lock_guard<std::mutex> lk(s_token_finish_mutex);
 
@@ -302,7 +310,7 @@ void SetToken(const u16 token, const bool interrupt)
 // THIS IS EXECUTED FROM VIDEO THREAD (BPStructs.cpp) when a new frame has been drawn
 void SetFinish()
 {
-  INFO_LOG(PIXELENGINE, "VIDEO Set Finish");
+  DEBUG_LOG(PIXELENGINE, "VIDEO Set Finish");
 
   std::lock_guard<std::mutex> lk(s_token_finish_mutex);
 

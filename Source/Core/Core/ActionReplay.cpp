@@ -19,8 +19,11 @@
 // copy, etc
 // -------------------------------------------------------------------------------------------------------------
 
+#include "Core/ActionReplay.h"
+
 #include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -30,13 +33,12 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/IniFile.h"
-#include "Common/Logging/LogManager.h"
+#include "Common/Logging/Log.h"
+#include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
 
 #include "Core/ARDecrypt.h"
-#include "Core/ActionReplay.h"
 #include "Core/ConfigManager.h"
-#include "Core/Core.h"
 #include "Core/PowerPC/PowerPC.h"
 
 namespace ActionReplay
@@ -88,7 +90,8 @@ static bool s_disable_logging = false;
 
 struct ARAddr
 {
-  union {
+  union
+  {
     u32 address;
     struct
     {
@@ -172,8 +175,6 @@ std::vector<ARCode> LoadCodes(const IniFile& global_ini, const IniFile& local_in
         continue;
       }
 
-      std::vector<std::string> pieces;
-
       // Check if the line is a name of the code
       if (line[0] == '$')
       {
@@ -184,7 +185,7 @@ std::vector<ARCode> LoadCodes(const IniFile& global_ini, const IniFile& local_in
         }
         if (encrypted_lines.size())
         {
-          DecryptARCode(encrypted_lines, current_code.ops);
+          DecryptARCode(encrypted_lines, &current_code.ops);
           codes.push_back(current_code);
           current_code.ops.clear();
           encrypted_lines.clear();
@@ -196,7 +197,7 @@ std::vector<ARCode> LoadCodes(const IniFile& global_ini, const IniFile& local_in
       }
       else
       {
-        SplitString(line, ' ', pieces);
+        std::vector<std::string> pieces = SplitString(line, ' ');
 
         // Check if the AR code is decrypted
         if (pieces.size() == 2 && pieces[0].size() == 8 && pieces[1].size() == 8)
@@ -222,7 +223,7 @@ std::vector<ARCode> LoadCodes(const IniFile& global_ini, const IniFile& local_in
         }
         else
         {
-          SplitString(line, '-', pieces);
+          pieces = SplitString(line, '-');
           if (pieces.size() == 3 && pieces[0].size() == 4 && pieces[1].size() == 4 &&
               pieces[2].size() == 5)
           {
@@ -242,7 +243,7 @@ std::vector<ARCode> LoadCodes(const IniFile& global_ini, const IniFile& local_in
     }
     if (encrypted_lines.size())
     {
-      DecryptARCode(encrypted_lines, current_code.ops);
+      DecryptARCode(encrypted_lines, &current_code.ops);
       codes.push_back(current_code);
     }
   }
@@ -277,7 +278,7 @@ static void LogInfo(const char* format, ...)
   if (s_disable_logging)
     return;
   bool use_internal_log = s_use_internal_log.load(std::memory_order_relaxed);
-  if (LogManager::GetMaxLevel() < LogTypes::LINFO && !use_internal_log)
+  if (MAX_LOGLEVEL < LogTypes::LINFO && !use_internal_log)
     return;
 
   va_list args;

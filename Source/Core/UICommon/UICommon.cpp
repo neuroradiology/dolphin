@@ -2,20 +2,29 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include <memory>
 #ifdef _WIN32
 #include <shlobj.h>  // for SHGetFolderPath
 #endif
 
 #include "Common/CommonPaths.h"
+#include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
 #include "Common/Logging/LogManager.h"
+#include "Common/MsgHandler.h"
 
+#include "Core/ConfigLoaders/BaseConfigLoader.h"
 #include "Core/ConfigManager.h"
+#include "Core/Core.h"
+#include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/Wiimote.h"
+#include "Core/IOS/IOS.h"
+#include "Core/IOS/STM/STM.h"
 
 #include "InputCommon/GCAdapter.h"
 
 #include "UICommon/UICommon.h"
+#include "UICommon/USBUtils.h"
 
 #include "VideoCommon/VideoBackendBase.h"
 
@@ -23,8 +32,10 @@ namespace UICommon
 {
 void Init()
 {
-  LogManager::Init();
+  Config::Init();
+  Config::AddLayer(ConfigLoaders::GenerateBaseConfigLoader());
   SConfig::Init();
+  LogManager::Init();
   VideoBackendBase::PopulateList();
   WiimoteReal::LoadSettings();
   GCAdapter::Init();
@@ -38,8 +49,9 @@ void Shutdown()
   GCAdapter::Shutdown();
   WiimoteReal::Shutdown();
   VideoBackendBase::ClearList();
-  SConfig::Shutdown();
   LogManager::Shutdown();
+  SConfig::Shutdown();
+  Config::Shutdown();
 }
 
 void CreateDirectories()
@@ -51,6 +63,7 @@ void CreateDirectories()
   File::CreateFullPath(File::GetUserPath(D_CACHE_IDX));
   File::CreateFullPath(File::GetUserPath(D_CONFIG_IDX));
   File::CreateFullPath(File::GetUserPath(D_DUMPDSP_IDX));
+  File::CreateFullPath(File::GetUserPath(D_DUMPSSL_IDX));
   File::CreateFullPath(File::GetUserPath(D_DUMPTEXTURES_IDX));
   File::CreateFullPath(File::GetUserPath(D_GAMESETTINGS_IDX));
   File::CreateFullPath(File::GetUserPath(D_GCUSER_IDX));
@@ -192,6 +205,45 @@ void SetUserDirectory(const std::string& custom_path)
   }
 #endif
   File::SetUserPath(D_USER_IDX, user_path);
+}
+
+void SaveWiimoteSources()
+{
+  std::string ini_filename = File::GetUserPath(D_CONFIG_IDX) + WIIMOTE_INI_NAME ".ini";
+
+  IniFile inifile;
+  inifile.Load(ini_filename);
+
+  for (unsigned int i = 0; i < MAX_WIIMOTES; ++i)
+  {
+    std::string secname("Wiimote");
+    secname += (char)('1' + i);
+    IniFile::Section& sec = *inifile.GetOrCreateSection(secname);
+
+    sec.Set("Source", (int)g_wiimote_sources[i]);
+  }
+
+  std::string secname("BalanceBoard");
+  IniFile::Section& sec = *inifile.GetOrCreateSection(secname);
+  sec.Set("Source", (int)g_wiimote_sources[WIIMOTE_BALANCE_BOARD]);
+
+  inifile.Save(ini_filename);
+}
+
+bool TriggerSTMPowerEvent()
+{
+  const auto ios = IOS::HLE::GetIOS();
+  if (!ios)
+    return false;
+
+  const auto stm = ios->GetDeviceByName("/dev/stm/eventhook");
+  if (!stm || !std::static_pointer_cast<IOS::HLE::Device::STMEventHook>(stm)->HasHookInstalled())
+    return false;
+
+  Core::DisplayMessage("Shutting down", 30000);
+  ProcessorInterface::PowerButton_Tap();
+
+  return true;
 }
 
 }  // namespace UICommon

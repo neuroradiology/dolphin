@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <stack>
 #include <unordered_map>
 
@@ -18,13 +20,15 @@ struct ID3D11RasterizerState;
 
 namespace DX11
 {
-union RasterizerState {
+union RasterizerState
+{
   BitField<0, 2, D3D11_CULL_MODE> cull_mode;
 
   u32 packed;
 };
 
-union BlendState {
+union BlendState
+{
   BitField<0, 1, u32> blend_enable;
   BitField<1, 3, D3D11_BLEND_OP> blend_op;
   BitField<4, 4, u32> write_mask;
@@ -35,7 +39,8 @@ union BlendState {
   u32 packed;
 };
 
-union SamplerState {
+union SamplerState
+{
   BitField<0, 3, u64> min_filter;
   BitField<3, 1, u64> mag_filter;
   BitField<4, 8, u64> min_lod;
@@ -102,7 +107,7 @@ public:
   void PopDepthState();
   void PopRasterizerState();
 
-  void SetTexture(u32 index, ID3D11ShaderResourceView* texture)
+  void SetTexture(size_t index, ID3D11ShaderResourceView* texture)
   {
     if (m_current.textures[index] != texture)
       m_dirtyFlags |= DirtyFlag_Texture0 << index;
@@ -110,7 +115,7 @@ public:
     m_pending.textures[index] = texture;
   }
 
-  void SetSampler(u32 index, ID3D11SamplerState* sampler)
+  void SetSampler(size_t index, ID3D11SamplerState* sampler)
   {
     if (m_current.samplers[index] != sampler)
       m_dirtyFlags |= DirtyFlag_Sampler0 << index;
@@ -265,9 +270,9 @@ private:
 
   struct Resources
   {
-    ID3D11ShaderResourceView* textures[8];
-    ID3D11SamplerState* samplers[8];
-    ID3D11Buffer* pixelConstants[2];
+    std::array<ID3D11ShaderResourceView*, 8> textures;
+    std::array<ID3D11SamplerState*, 8> samplers;
+    std::array<ID3D11Buffer*, 2> pixelConstants;
     ID3D11Buffer* vertexConstants;
     ID3D11Buffer* geometryConstants;
     ID3D11Buffer* vertexBuffer;

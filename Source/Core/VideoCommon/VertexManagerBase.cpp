@@ -2,12 +2,16 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "VideoCommon/VertexManagerBase.h"
+
+#include <cmath>
 #include <memory>
 
 #include "Common/BitSet.h"
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
+#include "Core/ConfigManager.h"
 
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/DataReader.h"
@@ -21,8 +25,8 @@
 #include "VideoCommon/RenderBase.h"
 #include "VideoCommon/TextureCacheBase.h"
 #include "VideoCommon/VertexLoaderManager.h"
-#include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VertexShaderManager.h"
+#include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/XFMemory.h"
 
@@ -38,6 +42,23 @@ static const PrimitiveType primitive_from_gx[8] = {
     PRIMITIVE_LINES,      // GX_DRAW_LINE_STRIP
     PRIMITIVE_POINTS,     // GX_DRAW_POINTS
 };
+
+// Due to the BT.601 standard which the GameCube is based on being a compromise
+// between PAL and NTSC, neither standard gets square pixels. They are each off
+// by ~9% in opposite directions.
+// Just in case any game decides to take this into account, we do both these
+// tests with a large amount of slop.
+static bool AspectIs4_3(float width, float height)
+{
+  float aspect = fabsf(width / height);
+  return fabsf(aspect - 4.0f / 3.0f) < 4.0f / 3.0f * 0.11;  // within 11% of 4:3
+}
+
+static bool AspectIs16_9(float width, float height)
+{
+  float aspect = fabsf(width / height);
+  return fabsf(aspect - 16.0f / 9.0f) < 16.0f / 9.0f * 0.11;  // within 11% of 16:9
+}
 
 VertexManagerBase::VertexManagerBase()
 {
@@ -105,22 +126,22 @@ u32 VertexManagerBase::GetRemainingIndices(int primitive)
   {
     switch (primitive)
     {
-    case GX_DRAW_QUADS:
-    case GX_DRAW_QUADS_2:
+    case OpcodeDecoder::GX_DRAW_QUADS:
+    case OpcodeDecoder::GX_DRAW_QUADS_2:
       return index_len / 5 * 4;
-    case GX_DRAW_TRIANGLES:
+    case OpcodeDecoder::GX_DRAW_TRIANGLES:
       return index_len / 4 * 3;
-    case GX_DRAW_TRIANGLE_STRIP:
+    case OpcodeDecoder::GX_DRAW_TRIANGLE_STRIP:
       return index_len / 1 - 1;
-    case GX_DRAW_TRIANGLE_FAN:
+    case OpcodeDecoder::GX_DRAW_TRIANGLE_FAN:
       return index_len / 6 * 4 + 1;
 
-    case GX_DRAW_LINES:
+    case OpcodeDecoder::GX_DRAW_LINES:
       return index_len;
-    case GX_DRAW_LINE_STRIP:
+    case OpcodeDecoder::GX_DRAW_LINE_STRIP:
       return index_len / 2 + 1;
 
-    case GX_DRAW_POINTS:
+    case OpcodeDecoder::GX_DRAW_POINTS:
       return index_len;
 
     default:
@@ -131,28 +152,36 @@ u32 VertexManagerBase::GetRemainingIndices(int primitive)
   {
     switch (primitive)
     {
-    case GX_DRAW_QUADS:
-    case GX_DRAW_QUADS_2:
+    case OpcodeDecoder::GX_DRAW_QUADS:
+    case OpcodeDecoder::GX_DRAW_QUADS_2:
       return index_len / 6 * 4;
-    case GX_DRAW_TRIANGLES:
+    case OpcodeDecoder::GX_DRAW_TRIANGLES:
       return index_len;
-    case GX_DRAW_TRIANGLE_STRIP:
+    case OpcodeDecoder::GX_DRAW_TRIANGLE_STRIP:
       return index_len / 3 + 2;
-    case GX_DRAW_TRIANGLE_FAN:
+    case OpcodeDecoder::GX_DRAW_TRIANGLE_FAN:
       return index_len / 3 + 2;
 
-    case GX_DRAW_LINES:
+    case OpcodeDecoder::GX_DRAW_LINES:
       return index_len;
-    case GX_DRAW_LINE_STRIP:
+    case OpcodeDecoder::GX_DRAW_LINE_STRIP:
       return index_len / 2 + 1;
 
-    case GX_DRAW_POINTS:
+    case OpcodeDecoder::GX_DRAW_POINTS:
       return index_len;
 
     default:
       return 0;
     }
   }
+}
+
+std::pair<size_t, size_t> VertexManagerBase::ResetFlushAspectRatioCount()
+{
+  std::pair<size_t, size_t> val = std::make_pair(m_flush_count_4_3, m_flush_count_anamorphic);
+  m_flush_count_4_3 = 0;
+  m_flush_count_anamorphic = 0;
+  return val;
 }
 
 void VertexManagerBase::Flush()
@@ -164,22 +193,24 @@ void VertexManagerBase::Flush()
   g_video_backend->CheckInvalidState();
 
 #if defined(_DEBUG) || defined(DEBUGFAST)
-  PRIM_LOG("frame%d:\n texgen=%d, numchan=%d, dualtex=%d, ztex=%d, cole=%d, alpe=%d, ze=%d",
+  PRIM_LOG("frame%d:\n texgen=%u, numchan=%u, dualtex=%u, ztex=%u, cole=%u, alpe=%u, ze=%u",
            g_ActiveConfig.iSaveTargetId, xfmem.numTexGen.numTexGens, xfmem.numChan.numColorChans,
-           xfmem.dualTexTrans.enabled, bpmem.ztex2.op, (int)bpmem.blendmode.colorupdate,
-           (int)bpmem.blendmode.alphaupdate, (int)bpmem.zmode.updateenable);
+           xfmem.dualTexTrans.enabled, bpmem.ztex2.op.Value(), bpmem.blendmode.colorupdate.Value(),
+           bpmem.blendmode.alphaupdate.Value(), bpmem.zmode.updateenable.Value());
 
-  for (unsigned int i = 0; i < xfmem.numChan.numColorChans; ++i)
+  for (u32 i = 0; i < xfmem.numChan.numColorChans; ++i)
   {
     LitChannel* ch = &xfmem.color[i];
-    PRIM_LOG("colchan%d: matsrc=%d, light=0x%x, ambsrc=%d, diffunc=%d, attfunc=%d", i,
-             ch->matsource, ch->GetFullLightMask(), ch->ambsource, ch->diffusefunc, ch->attnfunc);
+    PRIM_LOG("colchan%u: matsrc=%u, light=0x%x, ambsrc=%u, diffunc=%u, attfunc=%u", i,
+             ch->matsource.Value(), ch->GetFullLightMask(), ch->ambsource.Value(),
+             ch->diffusefunc.Value(), ch->attnfunc.Value());
     ch = &xfmem.alpha[i];
-    PRIM_LOG("alpchan%d: matsrc=%d, light=0x%x, ambsrc=%d, diffunc=%d, attfunc=%d", i,
-             ch->matsource, ch->GetFullLightMask(), ch->ambsource, ch->diffusefunc, ch->attnfunc);
+    PRIM_LOG("alpchan%u: matsrc=%u, light=0x%x, ambsrc=%u, diffunc=%u, attfunc=%u", i,
+             ch->matsource.Value(), ch->GetFullLightMask(), ch->ambsource.Value(),
+             ch->diffusefunc.Value(), ch->attnfunc.Value());
   }
 
-  for (unsigned int i = 0; i < xfmem.numTexGen.numTexGens; ++i)
+  for (u32 i = 0; i < xfmem.numTexGen.numTexGens; ++i)
   {
     TexMtxInfo tinfo = xfmem.texMtxInfo[i];
     if (tinfo.texgentype != XF_TEXGEN_EMBOSS_MAP)
@@ -187,16 +218,17 @@ void VertexManagerBase::Flush()
     if (tinfo.texgentype != XF_TEXGEN_REGULAR)
       tinfo.projection = 0;
 
-    PRIM_LOG("txgen%d: proj=%d, input=%d, gentype=%d, srcrow=%d, embsrc=%d, emblght=%d, "
-             "postmtx=%d, postnorm=%d",
-             i, tinfo.projection, tinfo.inputform, tinfo.texgentype, tinfo.sourcerow,
-             tinfo.embosssourceshift, tinfo.embosslightshift, xfmem.postMtxInfo[i].index,
-             xfmem.postMtxInfo[i].normalize);
+    PRIM_LOG("txgen%u: proj=%u, input=%u, gentype=%u, srcrow=%u, embsrc=%u, emblght=%u, "
+             "postmtx=%u, postnorm=%u",
+             i, tinfo.projection.Value(), tinfo.inputform.Value(), tinfo.texgentype.Value(),
+             tinfo.sourcerow.Value(), tinfo.embosssourceshift.Value(),
+             tinfo.embosslightshift.Value(), xfmem.postMtxInfo[i].index.Value(),
+             xfmem.postMtxInfo[i].normalize.Value());
   }
 
-  PRIM_LOG("pixel: tev=%d, ind=%d, texgen=%d, dstalpha=%d, alphatest=0x%x",
-           (int)bpmem.genMode.numtevstages + 1, (int)bpmem.genMode.numindstages,
-           (int)bpmem.genMode.numtexgens, (u32)bpmem.dstalpha.enable,
+  PRIM_LOG("pixel: tev=%u, ind=%u, texgen=%u, dstalpha=%u, alphatest=0x%x",
+           bpmem.genMode.numtevstages.Value() + 1, bpmem.genMode.numindstages.Value(),
+           bpmem.genMode.numtexgens.Value(), bpmem.dstalpha.enable.Value(),
            (bpmem.alpha_test.hex >> 16) & 0xff);
 #endif
 
@@ -214,10 +246,9 @@ void VertexManagerBase::Flush()
         if (bpmem.tevind[i].IsActive() && bpmem.tevind[i].bt < bpmem.genMode.numindstages)
           usedtextures[bpmem.tevindref.getTexMap(bpmem.tevind[i].bt)] = true;
 
-    TextureCacheBase::UnbindTextures();
     for (unsigned int i : usedtextures)
     {
-      const TextureCacheBase::TCacheEntryBase* tentry = TextureCacheBase::Load(i);
+      const auto* tentry = g_texture_cache->Load(i);
 
       if (tentry)
       {
@@ -234,6 +265,24 @@ void VertexManagerBase::Flush()
 
   // set global vertex constants
   VertexShaderManager::SetConstants();
+
+  // Track some stats used elsewhere by the anamorphic widescreen heuristic.
+  if (!SConfig::GetInstance().bWii)
+  {
+    float* rawProjection = xfmem.projection.rawProjection;
+    bool viewport_is_4_3 = AspectIs4_3(xfmem.viewport.wd, xfmem.viewport.ht);
+    if (AspectIs16_9(rawProjection[2], rawProjection[0]) && viewport_is_4_3)
+    {
+      // Projection is 16:9 and viewport is 4:3, we are rendering an anamorphic
+      // widescreen picture.
+      m_flush_count_anamorphic++;
+    }
+    else if (AspectIs4_3(rawProjection[2], rawProjection[0]) && viewport_is_4_3)
+    {
+      // Projection and viewports are both 4:3, we are rendering a normal image.
+      m_flush_count_4_3++;
+    }
+  }
 
   // Calculate ZSlope for zfreeze
   if (!bpmem.genMode.zfreeze)
@@ -253,12 +302,9 @@ void VertexManagerBase::Flush()
     GeometryShaderManager::SetConstants();
     PixelShaderManager::SetConstants();
 
-    bool useDstAlpha = bpmem.dstalpha.enable && bpmem.blendmode.alphaupdate &&
-                       bpmem.zcontrol.pixel_format == PEControl::RGBA6_Z24;
-
     if (PerfQueryBase::ShouldEmulate())
       g_perf_query->EnableQuery(bpmem.zcontrol.early_ztest ? PQG_ZCOMP_ZCOMPLOC : PQG_ZCOMP);
-    g_vertex_manager->vFlush(useDstAlpha);
+    g_vertex_manager->vFlush();
     if (PerfQueryBase::ShouldEmulate())
       g_perf_query->DisableQuery(bpmem.zcontrol.early_ztest ? PQG_ZCOMP_ZCOMPLOC : PQG_ZCOMP);
   }
@@ -304,7 +350,7 @@ void VertexManagerBase::CalculateZSlope(NativeVertexFormat* format)
   {
     // If this vertex format has per-vertex position matrix IDs, look it up.
     if (vert_decl.posmtx.enable)
-      mtxIdx = VertexLoaderManager::position_matrix_index[2 - i];
+      mtxIdx = VertexLoaderManager::position_matrix_index[3 - i];
 
     if (vert_decl.position.components == 2)
       VertexLoaderManager::position_cache[2 - i][2] = 0;

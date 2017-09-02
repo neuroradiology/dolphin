@@ -16,6 +16,12 @@ class WiimoteLinux final : public Wiimote
 public:
   WiimoteLinux(bdaddr_t bdaddr);
   ~WiimoteLinux() override;
+  std::string GetId() const override
+  {
+    char bdaddr_str[18] = {};
+    ba2str(&m_bdaddr, bdaddr_str);
+    return bdaddr_str;
+  }
 
 protected:
   bool ConnectInternal() override;
@@ -40,8 +46,7 @@ public:
   ~WiimoteScannerLinux() override;
   bool IsReady() const override;
   void FindWiimotes(std::vector<Wiimote*>&, Wiimote*&) override;
-  void Update() override{};  // not needed on Linux
-
+  void Update() override {}  // not needed on Linux
 private:
   int m_device_id;
   int m_device_sock;

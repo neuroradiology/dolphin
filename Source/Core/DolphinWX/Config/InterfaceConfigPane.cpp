@@ -2,6 +2,10 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "DolphinWX/Config/InterfaceConfigPane.h"
+
+#include <array>
+#include <limits>
 #include <string>
 
 #include <wx/button.h>
@@ -9,57 +13,35 @@
 #include <wx/choice.h>
 #include <wx/gbsizer.h>
 #include <wx/language.h>
+#include <wx/msgdlg.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 
 #include "Common/CommonPaths.h"
 #include "Common/FileSearch.h"
 #include "Common/FileUtil.h"
+#include "Common/MsgHandler.h"
+#include "Common/StringUtil.h"
+
 #include "Core/ConfigManager.h"
-#include "Core/HotkeyManager.h"
-#include "DolphinWX/Config/InterfaceConfigPane.h"
+
 #include "DolphinWX/Frame.h"
-#include "DolphinWX/InputConfigDiag.h"
-#include "DolphinWX/Main.h"
+#include "DolphinWX/Input/InputConfigDiag.h"
 #include "DolphinWX/WxUtils.h"
 
 #if defined(HAVE_XRANDR) && HAVE_XRANDR
-#include "DolphinWX/X11Utils.h"
+#include "UICommon/X11Utils.h"
 #endif
 
-static const wxLanguage language_ids[] = {
-    wxLANGUAGE_DEFAULT,
+static const std::array<std::string, 29> language_ids{{
+    "",
 
-    wxLANGUAGE_MALAY,
-    wxLANGUAGE_CATALAN,
-    wxLANGUAGE_CZECH,
-    wxLANGUAGE_DANISH,
-    wxLANGUAGE_GERMAN,
-    wxLANGUAGE_ENGLISH,
-    wxLANGUAGE_SPANISH,
-    wxLANGUAGE_FRENCH,
-    wxLANGUAGE_CROATIAN,
-    wxLANGUAGE_ITALIAN,
-    wxLANGUAGE_HUNGARIAN,
-    wxLANGUAGE_DUTCH,
-    wxLANGUAGE_NORWEGIAN_BOKMAL,
-    wxLANGUAGE_POLISH,
-    wxLANGUAGE_PORTUGUESE,
-    wxLANGUAGE_PORTUGUESE_BRAZILIAN,
-    wxLANGUAGE_ROMANIAN,
-    wxLANGUAGE_SERBIAN,
-    wxLANGUAGE_SWEDISH,
-    wxLANGUAGE_TURKISH,
+    "ms", "ca", "cs",    "da", "de", "en", "es",    "fr",    "hr", "it", "hu", "nl",
+    "nb",  // wxWidgets won't accept "no"
+    "pl", "pt", "pt_BR", "ro", "sr", "sv", "tr",
 
-    wxLANGUAGE_GREEK,
-    wxLANGUAGE_RUSSIAN,
-    wxLANGUAGE_ARABIC,
-    wxLANGUAGE_FARSI,
-    wxLANGUAGE_KOREAN,
-    wxLANGUAGE_JAPANESE,
-    wxLANGUAGE_CHINESE_SIMPLIFIED,
-    wxLANGUAGE_CHINESE_TRADITIONAL,
-};
+    "el", "ru", "ar",    "fa", "ko", "ja", "zh_CN", "zh_TW",
+}};
 
 InterfaceConfigPane::InterfaceConfigPane(wxWindow* parent, wxWindowID id) : wxPanel(parent, id)
 {
@@ -105,8 +87,12 @@ void InterfaceConfigPane::InitializeGUI()
 
   m_confirm_stop_checkbox = new wxCheckBox(this, wxID_ANY, _("Confirm on Stop"));
   m_panic_handlers_checkbox = new wxCheckBox(this, wxID_ANY, _("Use Panic Handlers"));
-  m_osd_messages_checkbox = new wxCheckBox(this, wxID_ANY, _("On-Screen Display Messages"));
-  m_pause_focus_lost_checkbox = new wxCheckBox(this, wxID_ANY, _("Pause on Focus Lost"));
+  m_osd_messages_checkbox = new wxCheckBox(this, wxID_ANY, _("Show On-Screen Messages"));
+  m_show_active_title_checkbox =
+      new wxCheckBox(this, wxID_ANY, _("Show Active Title in Window Title"));
+  m_use_builtin_title_database_checkbox =
+      new wxCheckBox(this, wxID_ANY, _("Use Built-In Database of Game Names"));
+  m_pause_focus_lost_checkbox = new wxCheckBox(this, wxID_ANY, _("Pause on Focus Loss"));
   m_interface_lang_choice =
       new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, m_interface_lang_strings);
   m_theme_choice = new wxChoice(this, wxID_ANY);
@@ -117,6 +103,10 @@ void InterfaceConfigPane::InitializeGUI()
                                   &InterfaceConfigPane::OnPanicHandlersCheckBoxChanged, this);
   m_osd_messages_checkbox->Bind(wxEVT_CHECKBOX, &InterfaceConfigPane::OnOSDMessagesCheckBoxChanged,
                                 this);
+  m_show_active_title_checkbox->Bind(wxEVT_CHECKBOX,
+                                     &InterfaceConfigPane::OnShowActiveTitleCheckBoxChanged, this);
+  m_use_builtin_title_database_checkbox->Bind(
+      wxEVT_CHECKBOX, &InterfaceConfigPane::OnUseBuiltinTitleDatabaseCheckBoxChanged, this);
   m_pause_focus_lost_checkbox->Bind(wxEVT_CHECKBOX,
                                     &InterfaceConfigPane::OnPauseOnFocusLostCheckBoxChanged, this);
   m_interface_lang_choice->Bind(wxEVT_CHOICE,
@@ -131,32 +121,51 @@ void InterfaceConfigPane::InitializeGUI()
   m_osd_messages_checkbox->SetToolTip(
       _("Display messages over the emulation screen area.\nThese messages include memory card "
         "writes, video backend and CPU information, and JIT cache clearing."));
+  m_show_active_title_checkbox->SetToolTip(
+      _("Show the active title name in the emulation window title."));
+  m_use_builtin_title_database_checkbox->SetToolTip(
+      _("Read game names from an internal database instead of reading names from the games "
+        "themselves, except for games that aren't in the database. The names in the database are "
+        "often more consistently formatted, especially for Wii games."));
   m_pause_focus_lost_checkbox->SetToolTip(
       _("Pauses the emulator when focus is taken away from the emulation window."));
   m_interface_lang_choice->SetToolTip(
       _("Change the language of the user interface.\nRequires restart."));
 
-  wxGridBagSizer* const language_and_theme_grid_sizer = new wxGridBagSizer();
+  const int space5 = FromDIP(5);
+
+  wxGridBagSizer* const language_and_theme_grid_sizer = new wxGridBagSizer(space5, space5);
   language_and_theme_grid_sizer->Add(new wxStaticText(this, wxID_ANY, _("Language:")),
-                                     wxGBPosition(0, 0), wxDefaultSpan,
-                                     wxALIGN_CENTER_VERTICAL | wxALL, 5);
+                                     wxGBPosition(0, 0), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
   language_and_theme_grid_sizer->Add(m_interface_lang_choice, wxGBPosition(0, 1), wxDefaultSpan,
-                                     wxALL, 5);
+                                     wxALIGN_CENTER_VERTICAL);
   language_and_theme_grid_sizer->Add(new wxStaticText(this, wxID_ANY, _("Theme:")),
-                                     wxGBPosition(1, 0), wxDefaultSpan,
-                                     wxALIGN_CENTER_VERTICAL | wxALL, 5);
-  language_and_theme_grid_sizer->Add(m_theme_choice, wxGBPosition(1, 1), wxDefaultSpan, wxALL, 5);
+                                     wxGBPosition(1, 0), wxDefaultSpan, wxALIGN_CENTER_VERTICAL);
+  language_and_theme_grid_sizer->Add(m_theme_choice, wxGBPosition(1, 1), wxDefaultSpan,
+                                     wxALIGN_CENTER_VERTICAL);
 
   wxStaticBoxSizer* const main_static_box_sizer =
       new wxStaticBoxSizer(wxVERTICAL, this, _("Interface Settings"));
-  main_static_box_sizer->Add(m_confirm_stop_checkbox, 0, wxALL, 5);
-  main_static_box_sizer->Add(m_panic_handlers_checkbox, 0, wxALL, 5);
-  main_static_box_sizer->Add(m_osd_messages_checkbox, 0, wxALL, 5);
-  main_static_box_sizer->Add(m_pause_focus_lost_checkbox, 0, wxALL, 5);
-  main_static_box_sizer->Add(language_and_theme_grid_sizer, 0, wxEXPAND | wxALL, 0);
+  main_static_box_sizer->AddSpacer(space5);
+  main_static_box_sizer->Add(m_confirm_stop_checkbox, 0, wxLEFT | wxRIGHT, space5);
+  main_static_box_sizer->AddSpacer(space5);
+  main_static_box_sizer->Add(m_panic_handlers_checkbox, 0, wxLEFT | wxRIGHT, space5);
+  main_static_box_sizer->AddSpacer(space5);
+  main_static_box_sizer->Add(m_osd_messages_checkbox, 0, wxLEFT | wxRIGHT, space5);
+  main_static_box_sizer->AddSpacer(space5);
+  main_static_box_sizer->Add(m_show_active_title_checkbox, 0, wxLEFT | wxRIGHT, space5);
+  main_static_box_sizer->AddSpacer(space5);
+  main_static_box_sizer->Add(m_use_builtin_title_database_checkbox, 0, wxLEFT | wxRIGHT, space5);
+  main_static_box_sizer->AddSpacer(space5);
+  main_static_box_sizer->Add(m_pause_focus_lost_checkbox, 0, wxLEFT | wxRIGHT, space5);
+  main_static_box_sizer->AddSpacer(space5);
+  main_static_box_sizer->Add(language_and_theme_grid_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, space5);
+  main_static_box_sizer->AddSpacer(space5);
 
   wxBoxSizer* const main_box_sizer = new wxBoxSizer(wxVERTICAL);
-  main_box_sizer->Add(main_static_box_sizer, 0, wxEXPAND | wxALL, 5);
+  main_box_sizer->AddSpacer(space5);
+  main_box_sizer->Add(main_static_box_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, space5);
+  main_box_sizer->AddSpacer(space5);
 
   SetSizer(main_box_sizer);
 }
@@ -168,16 +177,30 @@ void InterfaceConfigPane::LoadGUIValues()
   m_confirm_stop_checkbox->SetValue(startup_params.bConfirmStop);
   m_panic_handlers_checkbox->SetValue(startup_params.bUsePanicHandlers);
   m_osd_messages_checkbox->SetValue(startup_params.bOnScreenDisplayMessages);
+  m_show_active_title_checkbox->SetValue(startup_params.m_show_active_title);
+  m_use_builtin_title_database_checkbox->SetValue(startup_params.m_use_builtin_title_database);
   m_pause_focus_lost_checkbox->SetValue(SConfig::GetInstance().m_PauseOnFocusLost);
 
-  for (size_t i = 0; i < sizeof(language_ids) / sizeof(wxLanguage); i++)
+  const std::string exact_language = SConfig::GetInstance().m_InterfaceLanguage;
+  const std::string loose_language = exact_language.substr(0, exact_language.find('_'));
+  size_t exact_match_index = std::numeric_limits<size_t>::max();
+  size_t loose_match_index = std::numeric_limits<size_t>::max();
+  for (size_t i = 0; i < language_ids.size(); i++)
   {
-    if (language_ids[i] == SConfig::GetInstance().m_InterfaceLanguage)
+    if (language_ids[i] == exact_language)
     {
-      m_interface_lang_choice->SetSelection(i);
+      exact_match_index = i;
       break;
     }
+    else if (language_ids[i] == loose_language)
+    {
+      loose_match_index = i;
+    }
   }
+  if (exact_match_index != std::numeric_limits<size_t>::max())
+    m_interface_lang_choice->SetSelection(exact_match_index);
+  else if (loose_match_index != std::numeric_limits<size_t>::max())
+    m_interface_lang_choice->SetSelection(loose_match_index);
 
   LoadThemes();
 }
@@ -185,8 +208,7 @@ void InterfaceConfigPane::LoadGUIValues()
 void InterfaceConfigPane::LoadThemes()
 {
   auto sv =
-      DoFileSearch({""}, {File::GetUserPath(D_THEMES_IDX), File::GetSysDirectory() + THEMES_DIR},
-                   /*recursive*/ false);
+      Common::DoFileSearch({File::GetUserPath(D_THEMES_IDX), File::GetSysDirectory() + THEMES_DIR});
   for (const std::string& filename : sv)
   {
     std::string name, ext;
@@ -217,11 +239,25 @@ void InterfaceConfigPane::OnOSDMessagesCheckBoxChanged(wxCommandEvent& event)
   SConfig::GetInstance().bOnScreenDisplayMessages = m_osd_messages_checkbox->IsChecked();
 }
 
+void InterfaceConfigPane::OnShowActiveTitleCheckBoxChanged(wxCommandEvent&)
+{
+  SConfig::GetInstance().m_show_active_title = m_show_active_title_checkbox->IsChecked();
+}
+
+void InterfaceConfigPane::OnUseBuiltinTitleDatabaseCheckBoxChanged(wxCommandEvent&)
+{
+  SConfig::GetInstance().m_use_builtin_title_database =
+      m_use_builtin_title_database_checkbox->IsChecked();
+}
+
 void InterfaceConfigPane::OnInterfaceLanguageChoiceChanged(wxCommandEvent& event)
 {
   if (SConfig::GetInstance().m_InterfaceLanguage !=
       language_ids[m_interface_lang_choice->GetSelection()])
-    SuccessAlertT("You must restart Dolphin in order for the change to take effect.");
+  {
+    wxMessageBox(_("You must restart Dolphin in order for the change to take effect."),
+                 _("Restart Required"), wxOK | wxICON_INFORMATION, this);
+  }
 
   SConfig::GetInstance().m_InterfaceLanguage =
       language_ids[m_interface_lang_choice->GetSelection()];
@@ -236,6 +272,7 @@ void InterfaceConfigPane::OnThemeSelected(wxCommandEvent& event)
 {
   SConfig::GetInstance().theme_name = WxStrToStr(m_theme_choice->GetStringSelection());
 
-  main_frame->InitBitmaps();
-  main_frame->UpdateGameList();
+  wxCommandEvent theme_event{DOLPHIN_EVT_RELOAD_THEME_BITMAPS};
+  theme_event.SetEventObject(this);
+  ProcessEvent(theme_event);
 }

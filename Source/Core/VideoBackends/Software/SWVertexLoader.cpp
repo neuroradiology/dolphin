@@ -2,17 +2,18 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "VideoBackends/Software/SWVertexLoader.h"
+
+#include <cstddef>
 #include <limits>
 
-#include "Common/ChunkFile.h"
+#include "Common/Assert.h"
 #include "Common/CommonTypes.h"
+#include "Common/Logging/Log.h"
 
-#include "VideoBackends/Software/Clipper.h"
 #include "VideoBackends/Software/DebugUtil.h"
 #include "VideoBackends/Software/NativeVertexFormat.h"
 #include "VideoBackends/Software/Rasterizer.h"
-#include "VideoBackends/Software/SWVertexLoader.h"
-#include "VideoBackends/Software/SetupUnit.h"
 #include "VideoBackends/Software/Tev.h"
 #include "VideoBackends/Software/TransformUnit.h"
 
@@ -30,26 +31,20 @@ class NullNativeVertexFormat : public NativeVertexFormat
 {
 public:
   NullNativeVertexFormat(const PortableVertexDeclaration& _vtx_decl) { vtx_decl = _vtx_decl; }
-  void SetupVertexPointers() override {}
 };
 
-NativeVertexFormat*
+std::unique_ptr<NativeVertexFormat>
 SWVertexLoader::CreateNativeVertexFormat(const PortableVertexDeclaration& vtx_decl)
 {
-  return new NullNativeVertexFormat(vtx_decl);
+  return std::make_unique<NullNativeVertexFormat>(vtx_decl);
 }
 
-SWVertexLoader::SWVertexLoader()
+SWVertexLoader::SWVertexLoader() : LocalVBuffer(MAXVBUFFERSIZE), LocalIBuffer(MAXIBUFFERSIZE)
 {
-  LocalVBuffer.resize(MAXVBUFFERSIZE);
-  LocalIBuffer.resize(MAXIBUFFERSIZE);
-  m_SetupUnit = new SetupUnit;
 }
 
 SWVertexLoader::~SWVertexLoader()
 {
-  delete m_SetupUnit;
-  m_SetupUnit = nullptr;
 }
 
 void SWVertexLoader::ResetBuffer(u32 stride)
@@ -59,7 +54,7 @@ void SWVertexLoader::ResetBuffer(u32 stride)
   IndexGenerator::Start(GetIndexBuffer());
 }
 
-void SWVertexLoader::vFlush(bool useDstAlpha)
+void SWVertexLoader::vFlush()
 {
   DebugUtil::OnObjectBegin();
 
@@ -67,18 +62,19 @@ void SWVertexLoader::vFlush(bool useDstAlpha)
   switch (m_current_primitive_type)
   {
   case PRIMITIVE_POINTS:
-    primitiveType = GX_DRAW_POINTS;
+    primitiveType = OpcodeDecoder::GX_DRAW_POINTS;
     break;
   case PRIMITIVE_LINES:
-    primitiveType = GX_DRAW_LINES;
+    primitiveType = OpcodeDecoder::GX_DRAW_LINES;
     break;
   case PRIMITIVE_TRIANGLES:
-    primitiveType = g_ActiveConfig.backend_info.bSupportsPrimitiveRestart ? GX_DRAW_TRIANGLE_STRIP :
-                                                                            GX_DRAW_TRIANGLES;
+    primitiveType = g_ActiveConfig.backend_info.bSupportsPrimitiveRestart ?
+                        OpcodeDecoder::GX_DRAW_TRIANGLE_STRIP :
+                        OpcodeDecoder::GX_DRAW_TRIANGLES;
     break;
   }
 
-  m_SetupUnit->Init(primitiveType);
+  m_SetupUnit.Init(primitiveType);
 
   // set all states with are stored within video sw
   for (int i = 0; i < 4; i++)
@@ -96,22 +92,22 @@ void SWVertexLoader::vFlush(bool useDstAlpha)
     if (index == 0xffff)
     {
       // primitive restart
-      m_SetupUnit->Init(primitiveType);
+      m_SetupUnit.Init(primitiveType);
       continue;
     }
     memset(&m_Vertex, 0, sizeof(m_Vertex));
 
     // Super Mario Sunshine requires those to be zero for those debug boxes.
-    memset(&m_Vertex.color, 0, sizeof(m_Vertex.color));
+    m_Vertex.color = {};
 
     // parse the videocommon format to our own struct format (m_Vertex)
     SetFormat(g_main_cp_state.last_id, primitiveType);
     ParseVertex(VertexLoaderManager::GetCurrentVertexFormat()->GetVertexDeclaration(), index);
 
     // transform this vertex so that it can be used for rasterization (outVertex)
-    OutputVertexData* outVertex = m_SetupUnit->GetVertex();
+    OutputVertexData* outVertex = m_SetupUnit.GetVertex();
     TransformUnit::TransformPosition(&m_Vertex, outVertex);
-    memset(&outVertex->normal, 0, sizeof(outVertex->normal));
+    outVertex->normal = {};
     if (VertexLoaderManager::g_current_components & VB_HAS_NRM0)
     {
       TransformUnit::TransformNormal(
@@ -121,7 +117,7 @@ void SWVertexLoader::vFlush(bool useDstAlpha)
     TransformUnit::TransformTexCoord(&m_Vertex, outVertex, m_TexGenSpecialCase);
 
     // assemble and rasterize the primitive
-    m_SetupUnit->SetupVertex();
+    m_SetupUnit.SetupVertex();
 
     INCSTAT(stats.thisFrame.numVerticesLoaded)
   }
@@ -223,19 +219,19 @@ void SWVertexLoader::ParseVertex(const PortableVertexDeclaration& vdec, int inde
 
   ReadVertexAttribute<float>(&m_Vertex.position[0], src, vdec.position, 0, 3, false);
 
-  for (int i = 0; i < 3; i++)
+  for (std::size_t i = 0; i < m_Vertex.normal.size(); i++)
   {
     ReadVertexAttribute<float>(&m_Vertex.normal[i][0], src, vdec.normals[i], 0, 3, false);
   }
 
-  for (int i = 0; i < 2; i++)
+  for (std::size_t i = 0; i < m_Vertex.color.size(); i++)
   {
-    ReadVertexAttribute<u8>(m_Vertex.color[i], src, vdec.colors[i], 0, 4, true);
+    ReadVertexAttribute<u8>(m_Vertex.color[i].data(), src, vdec.colors[i], 0, 4, true);
   }
 
-  for (int i = 0; i < 8; i++)
+  for (std::size_t i = 0; i < m_Vertex.texCoords.size(); i++)
   {
-    ReadVertexAttribute<float>(m_Vertex.texCoords[i], src, vdec.texcoords[i], 0, 2, false);
+    ReadVertexAttribute<float>(m_Vertex.texCoords[i].data(), src, vdec.texcoords[i], 0, 2, false);
 
     // the texmtr is stored as third component of the texCoord
     if (vdec.texcoords[i].components >= 3)

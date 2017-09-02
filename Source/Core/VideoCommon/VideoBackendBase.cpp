@@ -10,11 +10,13 @@
 // TODO: ugly
 #ifdef _WIN32
 #include "VideoBackends/D3D/VideoBackend.h"
-#include "VideoBackends/D3D12/VideoBackend.h"
 #endif
 #include "VideoBackends/Null/VideoBackend.h"
 #include "VideoBackends/OGL/VideoBackend.h"
 #include "VideoBackends/Software/VideoBackend.h"
+#ifndef __APPLE__
+#include "VideoBackends/Vulkan/VideoBackend.h"
+#endif
 
 #include "VideoCommon/VideoBackendBase.h"
 
@@ -35,18 +37,13 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 
 void VideoBackendBase::PopulateList()
 {
-  // OGL > D3D11 > D3D12 > SW > Null
+  // OGL > D3D11 > Vulkan > SW > Null
   g_available_video_backends.push_back(std::make_unique<OGL::VideoBackend>());
 #ifdef _WIN32
   g_available_video_backends.push_back(std::make_unique<DX11::VideoBackend>());
-
-  // More robust way to check for D3D12 support than (unreliable) OS version checks.
-  HMODULE d3d12_module = LoadLibraryA("d3d12.dll");
-  if (d3d12_module != nullptr)
-  {
-    FreeLibrary(d3d12_module);
-    g_available_video_backends.push_back(std::make_unique<DX12::VideoBackend>());
-  }
+#endif
+#ifndef __APPLE__
+  g_available_video_backends.push_back(std::make_unique<Vulkan::VideoBackend>());
 #endif
   g_available_video_backends.push_back(std::make_unique<SW::VideoSoftware>());
   g_available_video_backends.push_back(std::make_unique<Null::VideoBackend>());

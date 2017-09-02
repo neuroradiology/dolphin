@@ -4,8 +4,15 @@
 
 #pragma once
 
+#include <string>
+
 #include <QMenu>
 #include <QMenuBar>
+
+namespace DiscIO
+{
+enum class Region;
+};
 
 class MenuBar final : public QMenuBar
 {
@@ -13,6 +20,12 @@ class MenuBar final : public QMenuBar
 
 public:
   explicit MenuBar(QWidget* parent = nullptr);
+
+  void EmulationStarted();
+  void EmulationPaused();
+  void EmulationStopped();
+  void UpdateStateSlotMenu();
+  void UpdateToolsMenu(bool emulation_started);
 
 signals:
   // File
@@ -27,6 +40,7 @@ signals:
   void Fullscreen();
   void FrameAdvance();
   void Screenshot();
+  void StartNetPlay();
   void StateLoad();
   void StateSave();
   void StateLoadSlot();
@@ -37,18 +51,29 @@ signals:
   void StateSaveUndo();
   void StateSaveOldest();
   void SetStateSlot(int slot);
+  void BootWiiSystemMenu();
+  void ImportNANDBackup();
+
+  void PerformOnlineUpdate(const std::string& region);
+
+  // Tools
+  void BootGameCubeIPL(DiscIO::Region region);
+
+  // Options
+  void Configure();
+  void ConfigureGraphics();
+  void ConfigureAudio();
+  void ConfigureControllers();
+  void ConfigureHotkeys();
 
   // View
-  void ShowTable();
   void ShowList();
+  void ShowGrid();
+  void ColumnVisibilityToggled(const QString& row, bool visible);
+  void GameListPlatformVisibilityToggled(const QString& row, bool visible);
+  void GameListRegionVisibilityToggled(const QString& row, bool visible);
 
   void ShowAboutDialog();
-
-public slots:
-  void EmulationStarted();
-  void EmulationPaused();
-  void EmulationStopped();
-  void UpdateStateSlotMenu();
 
 private:
   void AddFileMenu();
@@ -60,13 +85,32 @@ private:
 
   void AddViewMenu();
   void AddGameListTypeSection(QMenu* view_menu);
-  void AddTableColumnsMenu(QMenu* view_menu);
+  void AddListColumnsMenu(QMenu* view_menu);
+  void AddShowPlatformsMenu(QMenu* view_menu);
+  void AddShowRegionsMenu(QMenu* view_menu);
 
+  void AddOptionsMenu();
+  void AddToolsMenu();
   void AddHelpMenu();
+
+  void InstallWAD();
+  void ImportWiiSave();
+  void ExportWiiSaves();
+  void NANDExtractCertificates();
 
   // File
   QAction* m_open_action;
   QAction* m_exit_action;
+
+  // Tools
+  QAction* m_wad_install_action;
+  QMenu* m_perform_online_update_menu;
+  QAction* m_perform_online_update_for_current_region;
+  QAction* m_ntscj_ipl;
+  QAction* m_ntscu_ipl;
+  QAction* m_pal_ipl;
+  QAction* m_import_backup;
+  QAction* m_extract_certificates;
 
   // Emulation
   QAction* m_play_action;
@@ -76,6 +120,7 @@ private:
   QAction* m_fullscreen_action;
   QAction* m_frame_advance_action;
   QAction* m_screenshot_action;
+  QAction* m_boot_sysmenu;
   QMenu* m_state_load_menu;
   QMenu* m_state_save_menu;
   QMenu* m_state_slot_menu;

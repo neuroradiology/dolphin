@@ -37,13 +37,14 @@ This file mainly deals with the [Drive I/F], however [AIDFR] controls
   TODO maybe the files should be merged?
 */
 
+#include "Core/HW/AudioInterface.h"
+
 #include <algorithm>
 
 #include "AudioCommon/AudioCommon.h"
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Core/CoreTiming.h"
-#include "Core/HW/AudioInterface.h"
 #include "Core/HW/MMIO.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/SystemTimers.h"
@@ -70,7 +71,8 @@ enum
 };
 
 // AI Control Register
-union AICR {
+union AICR
+{
   AICR() { hex = 0; }
   AICR(u32 _hex) { hex = _hex; }
   struct
@@ -90,7 +92,8 @@ union AICR {
 };
 
 // AI Volume Register
-union AIVR {
+union AIVR
+{
   AIVR() { hex = 0; }
   struct
   {

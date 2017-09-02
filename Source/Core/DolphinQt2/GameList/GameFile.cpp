@@ -5,15 +5,23 @@
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QDir>
+#include <QFileInfo>
 #include <QImage>
 #include <QSharedPointer>
 
+#include "Common/Assert.h"
 #include "Common/FileUtil.h"
+#include "Common/NandPaths.h"
+#include "Common/StringUtil.h"
 #include "Core/ConfigManager.h"
+#include "Core/HW/WiiSaveCrypted.h"
+#include "Core/IOS/ES/ES.h"
+#include "Core/IOS/IOS.h"
+#include "Core/WiiUtils.h"
 #include "DiscIO/Blob.h"
 #include "DiscIO/Enums.h"
+#include "DiscIO/NANDContentLoader.h"
 #include "DiscIO/Volume.h"
-#include "DiscIO/VolumeCreator.h"
 #include "DolphinQt2/GameList/GameFile.h"
 #include "DolphinQt2/Resources.h"
 #include "DolphinQt2/Settings.h"
@@ -57,6 +65,17 @@ GameFile::GameFile(const QString& path) : m_path(path)
   m_valid = true;
 }
 
+bool GameFile::IsValid() const
+{
+  if (!m_valid)
+    return false;
+
+  if (m_platform == DiscIO::Platform::WII_WAD && !IOS::ES::IsChannel(m_title_id))
+    return false;
+
+  return true;
+}
+
 QString GameFile::GetCacheFileName() const
 {
   QString folder = QString::fromStdString(File::GetUserPath(D_CACHE_IDX));
@@ -64,10 +83,10 @@ QString GameFile::GetCacheFileName() const
   // files with the same names in different folders.
   QString hash =
       QString::fromUtf8(QCryptographicHash::hash(m_path.toUtf8(), QCryptographicHash::Md5).toHex());
-  return folder + m_file_name + hash;
+  return folder + GetFileName() + hash;
 }
 
-void GameFile::ReadBanner(const DiscIO::IVolume& volume)
+void GameFile::ReadBanner(const DiscIO::Volume& volume)
 {
   int width, height;
   std::vector<u32> buffer = volume.GetBanner(&width, &height);
@@ -81,8 +100,6 @@ void GameFile::ReadBanner(const DiscIO::IVolume& volume)
 
   if (!banner.isNull())
     m_banner = QPixmap::fromImage(banner);
-  else
-    m_banner = Resources::GetMisc(Resources::BANNER_MISSING);
 }
 
 bool GameFile::LoadFileInfo(const QString& path)
@@ -91,9 +108,6 @@ bool GameFile::LoadFileInfo(const QString& path)
   if (!info.exists() || !info.isReadable())
     return false;
 
-  m_file_name = info.fileName();
-  m_extension = info.suffix();
-  m_folder = info.dir().dirName();
   m_last_modified = info.lastModified();
   m_size = info.size();
 
@@ -102,7 +116,7 @@ bool GameFile::LoadFileInfo(const QString& path)
 
 void GameFile::LoadState()
 {
-  IniFile ini = SConfig::LoadGameIni(m_unique_id.toStdString(), m_revision);
+  IniFile ini = SConfig::LoadGameIni(m_game_id.toStdString(), m_revision);
   std::string issues_temp;
   ini.GetIfExists("EmuState", "EmulationStateId", &m_rating);
   ini.GetIfExists("EmuState", "EmulationIssues", &issues_temp);
@@ -111,7 +125,8 @@ void GameFile::LoadState()
 
 bool GameFile::IsElfOrDol()
 {
-  return m_extension == QStringLiteral("elf") || m_extension == QStringLiteral("dol");
+  QString extension = GetFileExtension();
+  return extension == QStringLiteral("elf") || extension == QStringLiteral("dol");
 }
 
 bool GameFile::TryLoadCache()
@@ -137,24 +152,26 @@ bool GameFile::TryLoadCache()
 
 bool GameFile::TryLoadVolume()
 {
-  QSharedPointer<DiscIO::IVolume> volume(
+  QSharedPointer<DiscIO::Volume> volume(
       DiscIO::CreateVolumeFromFilename(m_path.toStdString()).release());
   if (volume == nullptr)
     return false;
 
-  m_unique_id = QString::fromStdString(volume->GetUniqueID());
+  m_game_id = QString::fromStdString(volume->GetGameID());
   std::string maker_id = volume->GetMakerID();
+  m_title_id = volume->GetTitleID().value_or(0);
   m_maker = QString::fromStdString(DiscIO::GetCompanyFromID(maker_id));
   m_maker_id = QString::fromStdString(maker_id);
-  m_revision = volume->GetRevision();
+  m_revision = volume->GetRevision().value_or(0);
   m_internal_name = QString::fromStdString(volume->GetInternalName());
   m_short_names = ConvertLanguageMap(volume->GetShortNames());
   m_long_names = ConvertLanguageMap(volume->GetLongNames());
   m_short_makers = ConvertLanguageMap(volume->GetShortMakers());
   m_long_makers = ConvertLanguageMap(volume->GetLongMakers());
   m_descriptions = ConvertLanguageMap(volume->GetDescriptions());
-  m_disc_number = volume->GetDiscNumber();
+  m_disc_number = volume->GetDiscNumber().value_or(0);
   m_platform = volume->GetVolumeType();
+  m_region = volume->GetRegion();
   m_country = volume->GetCountry();
   m_blob_type = volume->GetBlobType();
   m_raw_size = volume->GetRawSize();
@@ -172,12 +189,11 @@ bool GameFile::TryLoadElfDol()
     return false;
 
   m_revision = 0;
-  m_long_names[DiscIO::Language::LANGUAGE_ENGLISH] = m_file_name;
   m_platform = DiscIO::Platform::ELF_DOL;
+  m_region = DiscIO::Region::UNKNOWN_REGION;
   m_country = DiscIO::Country::COUNTRY_UNKNOWN;
   m_blob_type = DiscIO::BlobType::DIRECTORY;
   m_raw_size = m_size;
-  m_banner = Resources::GetMisc(Resources::BANNER_MISSING);
   m_rating = 0;
 
   return true;
@@ -188,6 +204,21 @@ void GameFile::SaveCache()
   // TODO
 }
 
+QString GameFile::GetFileName() const
+{
+  return QFileInfo(m_path).fileName();
+}
+
+QString GameFile::GetFileExtension() const
+{
+  return QFileInfo(m_path).suffix();
+}
+
+QString GameFile::GetFileFolder() const
+{
+  return QFileInfo(m_path).dir().dirName();
+}
+
 QString GameFile::GetBannerString(const QMap<DiscIO::Language, QString>& m) const
 {
   // Try the settings language, then English, then just pick one.
@@ -195,11 +226,7 @@ QString GameFile::GetBannerString(const QMap<DiscIO::Language, QString>& m) cons
     return QString();
 
   bool wii = m_platform != DiscIO::Platform::GAMECUBE_DISC;
-  DiscIO::Language current_lang;
-  if (wii)
-    current_lang = Settings().GetWiiSystemLanguage();
-  else
-    current_lang = Settings().GetGCSystemLanguage();
+  DiscIO::Language current_lang = SConfig::GetInstance().GetCurrentLanguage(wii);
 
   if (m.contains(current_lang))
     return m[current_lang];
@@ -287,6 +314,102 @@ QString GameFile::GetLanguage(DiscIO::Language lang) const
   default:
     return QObject::tr("Unknown");
   }
+}
+
+QString GameFile::GetUniqueID() const
+{
+  std::vector<std::string> info;
+  if (!GetGameID().isEmpty())
+    info.push_back(GetGameID().toStdString());
+
+  if (GetRevision() != 0)
+  {
+    info.push_back("Revision " + std::to_string(GetRevision()));
+  }
+
+  std::string name = m_long_names[DiscIO::Language::LANGUAGE_ENGLISH].toStdString();
+
+  if (name.empty())
+  {
+    if (!m_long_names.isEmpty())
+      name = m_long_names.begin().value().toStdString();
+    else
+    {
+      std::string filename, extension;
+      name = SplitPath(m_path.toStdString(), nullptr, &filename, &extension);
+      name = filename + extension;
+    }
+  }
+
+  int disc_number = GetDiscNumber() + 1;
+
+  std::string lower_name = name;
+  std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+  if (disc_number > 1 &&
+      lower_name.find(std::string("disc ") + std::to_string(disc_number)) == std::string::npos &&
+      lower_name.find(std::string("disc") + std::to_string(disc_number)) == std::string::npos)
+  {
+    info.push_back("Disc " + std::to_string(disc_number));
+  }
+
+  if (info.empty())
+    return QString::fromStdString(name);
+
+  std::ostringstream ss;
+  std::copy(info.begin(), info.end() - 1, std::ostream_iterator<std::string>(ss, ", "));
+  ss << info.back();
+  return QString::fromStdString(name + " (" + ss.str() + ")");
+}
+
+bool GameFile::IsInstalled() const
+{
+  _assert_(m_platform == DiscIO::Platform::WII_WAD);
+
+  const std::string content_dir =
+      Common::GetTitleContentPath(m_title_id, Common::FromWhichRoot::FROM_CONFIGURED_ROOT);
+
+  if (!File::IsDirectory(content_dir))
+    return false;
+
+  // Since this isn't IOS and we only need a simple way to figure out if a title is installed,
+  // we make the (reasonable) assumption that having more than just the TMD in the content
+  // directory means that the title is installed.
+  const auto entries = File::ScanDirectoryTree(content_dir, false);
+  return std::any_of(entries.children.begin(), entries.children.end(),
+                     [](const auto& file) { return file.virtualName != "title.tmd"; });
+}
+
+bool GameFile::Install()
+{
+  _assert_(m_platform == DiscIO::Platform::WII_WAD);
+
+  bool installed = WiiUtils::InstallWAD(m_path.toStdString());
+
+  if (installed)
+    Settings::Instance().NANDRefresh();
+
+  return installed;
+}
+
+bool GameFile::Uninstall()
+{
+  _assert_(m_platform == DiscIO::Platform::WII_WAD);
+  IOS::HLE::Kernel ios;
+  return ios.GetES()->DeleteTitleContent(m_title_id) == IOS::HLE::IPC_SUCCESS;
+}
+
+bool GameFile::ExportWiiSave()
+{
+  return CWiiSaveCrypted::ExportWiiSave(m_title_id);
+}
+
+QString GameFile::GetWiiFSPath() const
+{
+  _assert_(m_platform == DiscIO::Platform::WII_DISC || m_platform == DiscIO::Platform::WII_WAD);
+
+  const std::string path = Common::GetTitleDataPath(m_title_id, Common::FROM_CONFIGURED_ROOT);
+
+  return QString::fromStdString(path);
 }
 
 // Convert an integer size to a friendly string representation.

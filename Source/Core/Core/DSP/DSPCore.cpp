@@ -3,31 +3,32 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
+#include "Core/DSP/DSPCore.h"
+
 #include <algorithm>
 #include <array>
 #include <memory>
 
-#include "Common/CommonFuncs.h"
 #include "Common/CommonTypes.h"
 #include "Common/Event.h"
-#include "Common/FileUtil.h"
 #include "Common/Hash.h"
 #include "Common/MemoryUtil.h"
+#include "Common/MsgHandler.h"
 
 #include "Core/DSP/DSPAnalyzer.h"
-#include "Core/DSP/DSPCore.h"
-#include "Core/DSP/DSPEmitter.h"
 #include "Core/DSP/DSPHWInterface.h"
 #include "Core/DSP/DSPHost.h"
-#include "Core/DSP/DSPIntUtil.h"
-#include "Core/DSP/DSPInterpreter.h"
+#include "Core/DSP/Interpreter/DSPIntUtil.h"
+#include "Core/DSP/Interpreter/DSPInterpreter.h"
+#include "Core/DSP/Jit/DSPEmitter.h"
 
+namespace DSP
+{
 SDSP g_dsp;
 DSPBreakpoints g_dsp_breakpoints;
-static DSPCoreState core_state = DSPCORE_STOP;
-u16 g_cycles_left = 0;
+static State core_state = State::Stopped;
 bool g_init_hax = false;
-std::unique_ptr<DSPEmitter> g_dsp_jit;
+std::unique_ptr<JIT::x86::DSPEmitter> g_dsp_jit;
 std::unique_ptr<DSPCaptureLogger> g_dsp_cap;
 static Common::Event step_event;
 
@@ -40,19 +41,26 @@ static bool VerifyRoms()
     u32 hash_drom;  // dsp_coef.bin
   };
 
-  static const std::array<DspRomHashes, 4> known_roms = {
-      {// Official Nintendo ROM
-       {0x66f334fe, 0xf3b93527},
+  static const std::array<DspRomHashes, 6> known_roms = {{
+      // Official Nintendo ROM
+      {0x66f334fe, 0xf3b93527},
 
-       // LM1234 replacement ROM (Zelda UCode only)
-       {0x9c8f593c, 0x10000001},
+      // LM1234 replacement ROM (Zelda UCode only)
+      {0x9c8f593c, 0x10000001},
 
-       // delroth's improvement on LM1234 replacement ROM (Zelda and AX only,
-       // IPL/Card/GBA still broken)
-       {0xd9907f71, 0xb019c2fb},
+      // delroth's improvement on LM1234 replacement ROM (Zelda and AX only,
+      // IPL/Card/GBA still broken)
+      {0xd9907f71, 0xb019c2fb},
 
-       // above with improved resampling coefficients
-       {0xd9907f71, 0xdb6880c1}}};
+      // above with improved resampling coefficients
+      {0xd9907f71, 0xdb6880c1},
+
+      // above with support for GBA ucode
+      {0x3aa4a793, 0xa4a575f5},
+
+      // above with fix to skip bootucode_ax when running from ROM entrypoint
+      {0x128ea7a2, 0xa4a575f5},
+  }};
 
   u32 hash_irom = HashAdler32((u8*)g_dsp.irom, DSP_IROM_BYTE_SIZE);
   u32 hash_drom = HashAdler32((u8*)g_dsp.coef, DSP_COEF_BYTE_SIZE);
@@ -75,14 +83,20 @@ static bool VerifyRoms()
 
   if (rom_idx == 1)
   {
-    DSPHost::OSD_AddMessage("You are using an old free DSP ROM made by the Dolphin Team.", 6000);
-    DSPHost::OSD_AddMessage("Only games using the Zelda UCode will work correctly.", 6000);
+    Host::OSD_AddMessage("You are using an old free DSP ROM made by the Dolphin Team.", 6000);
+    Host::OSD_AddMessage("Only games using the Zelda UCode will work correctly.", 6000);
   }
   else if (rom_idx == 2 || rom_idx == 3)
   {
-    DSPHost::OSD_AddMessage("You are using a free DSP ROM made by the Dolphin Team.", 8000);
-    DSPHost::OSD_AddMessage("All Wii games will work correctly, and most GC games should ", 8000);
-    DSPHost::OSD_AddMessage("also work fine, but the GBA/IPL/CARD UCodes will not work.\n", 8000);
+    Host::OSD_AddMessage("You are using a free DSP ROM made by the Dolphin Team.", 8000);
+    Host::OSD_AddMessage("All Wii games will work correctly, and most GameCube games", 8000);
+    Host::OSD_AddMessage("should also work fine, but the GBA/CARD UCodes will not work.", 8000);
+  }
+  else if (rom_idx == 4)
+  {
+    Host::OSD_AddMessage("You are using a free DSP ROM made by the Dolphin Team.", 8000);
+    Host::OSD_AddMessage("All Wii games will work correctly, and most GameCube games", 8000);
+    Host::OSD_AddMessage("should also work fine, but the CARD UCode will not work.", 8000);
   }
 
   return true;
@@ -100,7 +114,6 @@ static void DSPCore_FreeMemoryPages()
 bool DSPCore_Init(const DSPInitOptions& opts)
 {
   g_dsp.step_counter = 0;
-  g_cycles_left = 0;
   g_init_hax = false;
 
   g_dsp.irom = static_cast<u16*>(Common::AllocateMemoryPages(DSP_IROM_BYTE_SIZE));
@@ -146,20 +159,20 @@ bool DSPCore_Init(const DSPInitOptions& opts)
 
   // Initialize JIT, if necessary
   if (opts.core_type == DSPInitOptions::CORE_JIT)
-    g_dsp_jit = std::make_unique<DSPEmitter>();
+    g_dsp_jit = std::make_unique<JIT::x86::DSPEmitter>();
 
   g_dsp_cap.reset(opts.capture_logger);
 
-  core_state = DSPCORE_RUNNING;
+  core_state = State::Running;
   return true;
 }
 
 void DSPCore_Shutdown()
 {
-  if (core_state == DSPCORE_STOP)
+  if (core_state == State::Stopped)
     return;
 
-  core_state = DSPCORE_STOP;
+  core_state = State::Stopped;
 
   g_dsp_jit.reset();
 
@@ -174,7 +187,7 @@ void DSPCore_Reset()
 
   std::fill(std::begin(g_dsp.r.wr), std::end(g_dsp.r.wr), 0xffff);
 
-  DSPAnalyzer::Analyze();
+  Analyzer::Analyze();
 }
 
 void DSPCore_SetException(u8 level)
@@ -191,7 +204,7 @@ void DSPCore_SetExternalInterrupt(bool val)
 // Coming from the CPU
 void DSPCore_CheckExternalInterrupt()
 {
-  if (!dsp_SR_is_flag_set(SR_EXT_INT_ENABLE))
+  if (!Interpreter::dsp_SR_is_flag_set(SR_EXT_INT_ENABLE))
     return;
 
   // Signal the SPU about new mail
@@ -211,11 +224,11 @@ void DSPCore_CheckExceptions()
     // Seems exp int are not masked by sr_int_enable
     if (g_dsp.exceptions & (1 << i))
     {
-      if (dsp_SR_is_flag_set(SR_INT_ENABLE) || (i == EXP_INT))
+      if (Interpreter::dsp_SR_is_flag_set(SR_INT_ENABLE) || (i == EXP_INT))
       {
         // store pc and sr until RTI
-        dsp_reg_store_stack(DSP_STACK_C, g_dsp.pc);
-        dsp_reg_store_stack(DSP_STACK_D, g_dsp.r.sr);
+        dsp_reg_store_stack(StackRegister::Call, g_dsp.pc);
+        dsp_reg_store_stack(StackRegister::Data, g_dsp.r.sr);
 
         g_dsp.pc = i * 2;
         g_dsp.exceptions &= ~(1 << i);
@@ -241,97 +254,62 @@ int DSPCore_RunCycles(int cycles)
 {
   if (g_dsp_jit)
   {
-    if (g_dsp.external_interrupt_waiting)
-    {
-      DSPCore_CheckExternalInterrupt();
-      DSPCore_CheckExceptions();
-      DSPCore_SetExternalInterrupt(false);
-    }
-
-    g_cycles_left = cycles;
-    DSPCompiledCode pExecAddr = (DSPCompiledCode)g_dsp_jit->enterDispatcher;
-    pExecAddr();
-
-    if (g_dsp.reset_dspjit_codespace)
-      g_dsp_jit->ClearIRAMandDSPJITCodespaceReset();
-
-    return g_cycles_left;
+    return g_dsp_jit->RunCycles(static_cast<u16>(cycles));
   }
 
   while (cycles > 0)
   {
     switch (core_state)
     {
-    case DSPCORE_RUNNING:
+    case State::Running:
 // Seems to slow things down
 #if defined(_DEBUG) || defined(DEBUGFAST)
-      cycles = DSPInterpreter::RunCyclesDebug(cycles);
+      cycles = Interpreter::RunCyclesDebug(cycles);
 #else
-      cycles = DSPInterpreter::RunCycles(cycles);
+      cycles = Interpreter::RunCycles(cycles);
 #endif
       break;
 
-    case DSPCORE_STEPPING:
+    case State::Stepping:
       step_event.Wait();
-      if (core_state != DSPCORE_STEPPING)
+      if (core_state != State::Stepping)
         continue;
 
-      DSPInterpreter::Step();
+      Interpreter::Step();
       cycles--;
 
-      DSPHost::UpdateDebugger();
+      Host::UpdateDebugger();
       break;
-    case DSPCORE_STOP:
+    case State::Stopped:
       break;
     }
   }
   return cycles;
 }
 
-void DSPCore_SetState(DSPCoreState new_state)
+void DSPCore_SetState(State new_state)
 {
   core_state = new_state;
+
   // kick the event, in case we are waiting
-  if (new_state == DSPCORE_RUNNING)
+  if (new_state == State::Running)
     step_event.Set();
-  // Sleep(10);
-  DSPHost::UpdateDebugger();
+
+  Host::UpdateDebugger();
 }
 
-DSPCoreState DSPCore_GetState()
+State DSPCore_GetState()
 {
   return core_state;
 }
 
 void DSPCore_Step()
 {
-  if (core_state == DSPCORE_STEPPING)
+  if (core_state == State::Stepping)
     step_event.Set();
 }
 
-void CompileCurrent()
-{
-  g_dsp_jit->Compile(g_dsp.pc);
-
-  bool retry = true;
-
-  while (retry)
-  {
-    retry = false;
-    for (u16 i = 0x0000; i < 0xffff; ++i)
-    {
-      if (!g_dsp_jit->unresolvedJumps[i].empty())
-      {
-        u16 addrToCompile = g_dsp_jit->unresolvedJumps[i].front();
-        g_dsp_jit->Compile(addrToCompile);
-        if (!g_dsp_jit->unresolvedJumps[i].empty())
-          retry = true;
-      }
-    }
-  }
-}
-
-u16 DSPCore_ReadRegister(int reg)
+u16 DSPCore_ReadRegister(size_t reg)
 {
   switch (reg)
   {
@@ -388,7 +366,7 @@ u16 DSPCore_ReadRegister(int reg)
   }
 }
 
-void DSPCore_WriteRegister(int reg, u16 val)
+void DSPCore_WriteRegister(size_t reg, u16 val)
 {
   switch (reg)
   {
@@ -456,3 +434,4 @@ void DSPCore_WriteRegister(int reg, u16 val)
     break;
   }
 }
+}  // namespace DSP

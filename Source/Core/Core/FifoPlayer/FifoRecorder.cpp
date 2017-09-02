@@ -2,11 +2,13 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
-#include <algorithm>
-#include <mutex>
-
 #include "Core/FifoPlayer/FifoRecorder.h"
 
+#include <algorithm>
+#include <cstring>
+#include <mutex>
+
+#include "Common/MsgHandler.h"
 #include "Common/Thread.h"
 #include "Core/ConfigManager.h"
 #include "Core/FifoPlayer/FifoAnalyzer.h"
@@ -16,13 +18,7 @@
 static FifoRecorder instance;
 static std::recursive_mutex sMutex;
 
-FifoRecorder::FifoRecorder()
-    : m_IsRecording(false), m_WasRecording(false), m_RequestedRecordingEnd(false),
-      m_RecordFramesRemaining(0), m_FinishedCb(nullptr), m_File(nullptr), m_SkipNextData(true),
-      m_SkipFutureData(true), m_FrameEnded(false), m_Ram(Memory::RAM_SIZE),
-      m_ExRam(Memory::EXRAM_SIZE)
-{
-}
+FifoRecorder::FifoRecorder() = default;
 
 FifoRecorder::~FifoRecorder()
 {
@@ -38,6 +34,22 @@ void FifoRecorder::StartRecording(s32 numFrames, CallbackFunc finishedCb)
   FifoAnalyzer::Init();
 
   m_File = new FifoDataFile;
+
+  // TODO: This, ideally, would be deallocated when done recording.
+  //       However, care needs to be taken since global state
+  //       and multithreading don't play well nicely together.
+  //       The video thread may call into functions that utilize these
+  //       despite 'end recording' being requested via StopRecording().
+  //       (e.g. OpcodeDecoder calling UseMemory())
+  //
+  // Basically:
+  //   - Singletons suck
+  //   - Global variables suck
+  //   - Multithreading with the above two sucks
+  //
+  m_Ram.resize(Memory::RAM_SIZE);
+  m_ExRam.resize(Memory::EXRAM_SIZE);
+
   std::fill(m_Ram.begin(), m_Ram.end(), 0);
   std::fill(m_ExRam.begin(), m_ExRam.end(), 0);
 
@@ -182,7 +194,7 @@ void FifoRecorder::EndFrame(u32 fifoStart, u32 fifoEnd)
 }
 
 void FifoRecorder::SetVideoMemory(const u32* bpMem, const u32* cpMem, const u32* xfMem,
-                                  const u32* xfRegs, u32 xfRegsSize)
+                                  const u32* xfRegs, u32 xfRegsSize, const u8* texMem)
 {
   std::lock_guard<std::recursive_mutex> lk(sMutex);
 
@@ -194,6 +206,8 @@ void FifoRecorder::SetVideoMemory(const u32* bpMem, const u32* cpMem, const u32*
 
     u32 xfRegsCopySize = std::min((u32)FifoDataFile::XF_REGS_SIZE, xfRegsSize);
     memcpy(m_File->GetXFRegs(), xfRegs, xfRegsCopySize * 4);
+
+    memcpy(m_File->GetTexMem(), texMem, FifoDataFile::TEX_MEM_SIZE);
   }
 
   FifoRecordAnalyzer::Initialize(cpMem);

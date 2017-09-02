@@ -7,7 +7,6 @@
 #include <SFML/Network/Packet.hpp>
 #include <array>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -35,7 +34,7 @@ public:
   virtual void OnPadBufferChanged(u32 buffer) = 0;
   virtual void OnDesync(u32 frame, const std::string& player) = 0;
   virtual void OnConnectionLost() = 0;
-  virtual void OnTraversalError(int error) = 0;
+  virtual void OnTraversalError(TraversalClient::FailureReason error) = 0;
   virtual bool IsRecording() = 0;
   virtual std::string FindGame(const std::string& game) = 0;
   virtual void ShowMD5Dialog(const std::string& file_identifier) = 0;
@@ -65,11 +64,10 @@ class NetPlayClient : public TraversalClientClient
 {
 public:
   void ThreadFunc();
-  void SendAsync(std::unique_ptr<sf::Packet> packet);
+  void SendAsync(sf::Packet&& packet);
 
   NetPlayClient(const std::string& address, const u16 port, NetPlayUI* dialog,
-                const std::string& name, bool traversal, const std::string& centralServer,
-                u16 centralPort);
+                const std::string& name, const NetTraversalConfig& traversal_config);
   ~NetPlayClient();
 
   void GetPlayerList(std::string& list, std::vector<int>& pid_list);
@@ -84,18 +82,18 @@ public:
   void SendChatMessage(const std::string& msg);
 
   // Send and receive pads values
-  bool WiimoteUpdate(int _number, u8* data, const u8 size);
-  bool GetNetPads(const u8 pad_nb, GCPadStatus* pad_status);
+  bool WiimoteUpdate(int _number, u8* data, const u8 size, u8 reporting_mode);
+  bool GetNetPads(int pad_nb, GCPadStatus* pad_status);
 
   void OnTraversalStateChanged() override;
   void OnConnectReady(ENetAddress addr) override;
   void OnConnectFailed(u8 reason) override;
 
-  bool IsFirstInGamePad(u8 ingame_pad) const;
-  u8 NumLocalPads() const;
+  bool IsFirstInGamePad(int ingame_pad) const;
+  int NumLocalPads() const;
 
-  u8 InGamePadToLocalPad(u8 ingame_pad);
-  u8 LocalPadToInGamePad(u8 localPad);
+  int InGamePadToLocalPad(int ingame_pad) const;
+  int LocalPadToInGamePad(int localPad) const;
 
   static void SendTimeBase();
   bool DoAllPlayersHaveGame();
@@ -111,7 +109,7 @@ protected:
     std::recursive_mutex async_queue_write;
   } m_crit;
 
-  Common::FifoQueue<std::unique_ptr<sf::Packet>, false> m_async_queue;
+  Common::FifoQueue<sf::Packet, false> m_async_queue;
 
   std::array<Common::FifoQueue<GCPadStatus>, 4> m_pad_buffer;
   std::array<Common::FifoQueue<NetWiimote>, 4> m_wiimote_buffer;
@@ -154,10 +152,10 @@ private:
   void SendStopGamePacket();
 
   void UpdateDevices();
-  void SendPadState(const PadMapping in_game_pad, const GCPadStatus& np);
-  void SendWiimoteState(const PadMapping in_game_pad, const NetWiimote& nw);
+  void SendPadState(int in_game_pad, const GCPadStatus& np);
+  void SendWiimoteState(int in_game_pad, const NetWiimote& nw);
   unsigned int OnData(sf::Packet& packet);
-  void Send(sf::Packet& packet);
+  void Send(const sf::Packet& packet);
   void Disconnect();
   bool Connect();
   void ComputeMD5(const std::string& file_identifier);

@@ -30,16 +30,15 @@
 #include "DolphinWX/WxUtils.h"
 
 // Milliseconds between msgQueue flushes to wxTextCtrl
-#define UPDATETIME 200
+constexpr int UPDATE_TIME_MS = 200;
 // Max size of msgQueue, old messages will be discarded when there are too many.
-#define MSGQUEUE_MAX_SIZE 100
+constexpr size_t MSGQUEUE_MAX_SIZE = 100;
 
 CLogWindow::CLogWindow(CFrame* parent, wxWindowID id, const wxPoint& pos, const wxSize& size,
                        long style, const wxString& name)
     : wxPanel(parent, id, pos, size, style, name), x(0), y(0), winpos(0), Parent(parent),
       m_LogAccess(true), m_Log(nullptr), m_cmdline(nullptr), m_FontChoice(nullptr)
 {
-  Bind(wxEVT_CLOSE_WINDOW, &CLogWindow::OnClose, this);
   Bind(wxEVT_TIMER, &CLogWindow::OnLogTimer, this);
 
   m_LogManager = LogManager::GetInstance();
@@ -48,7 +47,7 @@ CLogWindow::CLogWindow(CFrame* parent, wxWindowID id, const wxPoint& pos, const 
   CreateGUIControls();
 
   m_LogTimer.SetOwner(this);
-  m_LogTimer.Start(UPDATETIME);
+  m_LogTimer.Start(UPDATE_TIME_MS);
 }
 
 void CLogWindow::CreateGUIControls()
@@ -62,39 +61,6 @@ void CLogWindow::CreateGUIControls()
   log_window->Get("y", &y, Parent->GetSize().GetY());
   log_window->Get("pos", &winpos, wxAUI_DOCK_RIGHT);
 
-  // Set up log listeners
-  int verbosity;
-  options->Get("Verbosity", &verbosity, 0);
-
-  // Ensure the verbosity level is valid
-  if (verbosity < 1)
-    verbosity = 1;
-  if (verbosity > MAX_LOGLEVEL)
-    verbosity = MAX_LOGLEVEL;
-
-  // Get the logger output settings from the config ini file.
-  options->Get("WriteToFile", &m_writeFile, false);
-  options->Get("WriteToWindow", &m_writeWindow, true);
-
-  IniFile::Section* logs = ini.GetOrCreateSection("Logs");
-  for (int i = 0; i < LogTypes::NUMBER_OF_LOGS; ++i)
-  {
-    bool enable;
-    logs->Get(m_LogManager->GetShortName((LogTypes::LOG_TYPE)i), &enable, false);
-
-    if (m_writeWindow && enable)
-      m_LogManager->AddListener((LogTypes::LOG_TYPE)i, LogListener::LOG_WINDOW_LISTENER);
-    else
-      m_LogManager->RemoveListener((LogTypes::LOG_TYPE)i, LogListener::LOG_WINDOW_LISTENER);
-
-    if (m_writeFile && enable)
-      m_LogManager->AddListener((LogTypes::LOG_TYPE)i, LogListener::FILE_LISTENER);
-    else
-      m_LogManager->RemoveListener((LogTypes::LOG_TYPE)i, LogListener::FILE_LISTENER);
-
-    m_LogManager->SetLogLevel((LogTypes::LOG_TYPE)i, (LogTypes::LOG_LEVELS)(verbosity));
-  }
-
   // Font
   m_FontChoice = new wxChoice(this, wxID_ANY);
   m_FontChoice->Bind(wxEVT_CHOICE, &CLogWindow::OnFontChange, this);
@@ -103,7 +69,12 @@ void CLogWindow::CreateGUIControls()
   m_FontChoice->Append(_("Selected font"));
 
   DefaultFont = GetFont();
-  MonoSpaceFont.SetNativeFontInfoUserDesc("lucida console windows-1252");
+  MonoSpaceFont.SetFamily(wxFONTFAMILY_TELETYPE);
+#ifdef _WIN32
+  // Windows uses Courier New for monospace even though there are better fonts.
+  MonoSpaceFont.SetFaceName("Consolas");
+#endif
+  MonoSpaceFont.SetPointSize(DefaultFont.GetPointSize());
   LogFont.push_back(DefaultFont);
   LogFont.push_back(MonoSpaceFont);
   LogFont.push_back(DebuggerFont);
@@ -132,11 +103,13 @@ void CLogWindow::CreateGUIControls()
       new wxButton(this, wxID_ANY, _("Clear"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
   m_clear_log_btn->Bind(wxEVT_BUTTON, &CLogWindow::OnClear, this);
 
+  const int space3 = FromDIP(3);
+
   // Sizers
   wxBoxSizer* sTop = new wxBoxSizer(wxHORIZONTAL);
-  sTop->Add(m_clear_log_btn);
-  sTop->Add(m_FontChoice, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 3);
-  sTop->Add(m_WrapLine, 0, wxALIGN_CENTER_VERTICAL);
+  sTop->Add(m_clear_log_btn, 0, wxALIGN_CENTER_VERTICAL);
+  sTop->Add(m_FontChoice, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, space3);
+  sTop->Add(m_WrapLine, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, space3);
 
   sBottom = new wxBoxSizer(wxVERTICAL);
   PopulateBottom();
@@ -151,16 +124,12 @@ void CLogWindow::CreateGUIControls()
 
 CLogWindow::~CLogWindow()
 {
-  for (int i = 0; i < LogTypes::NUMBER_OF_LOGS; ++i)
-  {
-    m_LogManager->RemoveListener((LogTypes::LOG_TYPE)i, LogListener::LOG_WINDOW_LISTENER);
-  }
+  RemoveAllListeners();
 }
 
-void CLogWindow::OnClose(wxCloseEvent& event)
+void CLogWindow::RemoveAllListeners()
 {
-  SaveSettings();
-  event.Skip();
+  m_LogManager->RegisterListener(LogListener::LOG_WINDOW_LISTENER, nullptr);
 }
 
 void CLogWindow::SaveSettings()
@@ -168,7 +137,7 @@ void CLogWindow::SaveSettings()
   IniFile ini;
   ini.Load(File::GetUserPath(F_LOGGERCONFIG_IDX));
 
-  if (!Parent->g_pCodeWindow)
+  if (!Parent->m_code_window)
   {
     IniFile::Section* log_window = ini.GetOrCreateSection("LogWindow");
     log_window->Set("x", x);
@@ -290,7 +259,7 @@ void CLogWindow::UpdateLog()
   // the GUI will lock up, which could be an issue if new messages are flooding in faster than
   // this function can render them to the screen.
   // So we limit this function to processing MSGQUEUE_MAX_SIZE messages each time it's called.
-  for (int num = 0; num < MSGQUEUE_MAX_SIZE; num++)
+  for (size_t num = 0; num < MSGQUEUE_MAX_SIZE; num++)
   {
     u8 log_level;
     wxString log_msg;
@@ -353,5 +322,5 @@ void CLogWindow::Log(LogTypes::LOG_LEVELS level, const char* text)
   if (msgQueue.size() >= MSGQUEUE_MAX_SIZE)
     msgQueue.pop();
 
-  msgQueue.push(std::make_pair(u8(level), StrToWxStr(text)));
+  msgQueue.emplace(static_cast<u8>(level), StrToWxStr(text));
 }

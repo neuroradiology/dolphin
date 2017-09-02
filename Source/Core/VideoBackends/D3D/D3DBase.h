@@ -6,10 +6,12 @@
 
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <dxgi.h>
+#include <dxgi1_2.h>
 #include <vector>
 
 #include "Common/Common.h"
+#include "Common/CommonTypes.h"
+#include "Common/MsgHandler.h"
 
 namespace DX11
 {
@@ -71,10 +73,10 @@ const char* GeometryShaderVersionString();
 const char* VertexShaderVersionString();
 bool BGRATexturesSupported();
 
-unsigned int GetMaxTextureSize();
+u32 GetMaxTextureSize(D3D_FEATURE_LEVEL feature_level);
 
 HRESULT SetFullscreenState(bool enable_fullscreen);
-HRESULT GetFullscreenState(bool* fullscreen_state);
+bool GetFullscreenState();
 
 // This function will assign a name to the given resource.
 // The DirectX debug layer will make it easier to identify resources that way,

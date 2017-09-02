@@ -28,8 +28,11 @@ public:
   CLogWindow(CFrame* parent, wxWindowID id = wxID_ANY, const wxPoint& pos = wxDefaultPosition,
              const wxSize& size = wxDefaultSize, long style = wxTAB_TRAVERSAL,
              const wxString& name = _("Log"));
-  ~CLogWindow();
+  ~CLogWindow() override;
 
+  // Listeners must be removed explicitly before the window is closed to prevent crashes on OS X
+  // when closing via the Dock. (The Core is probably being shutdown before the window)
+  void RemoveAllListeners();
   void SaveSettings();
   void Log(LogTypes::LOG_LEVELS, const char* text) override;
 
@@ -42,7 +45,7 @@ private:
   wxTimer m_LogTimer;
   LogManager* m_LogManager;
   std::queue<std::pair<u8, wxString>> msgQueue;
-  bool m_writeFile, m_writeWindow, m_LogAccess;
+  bool m_LogAccess;
 
   // Controls
   wxBoxSizer* sBottom;
@@ -58,7 +61,6 @@ private:
   void CreateGUIControls();
   void PopulateBottom();
   void UnPopulateBottom();
-  void OnClose(wxCloseEvent& event);
   void OnFontChange(wxCommandEvent& event);
   void OnWrapLineCheck(wxCommandEvent& event);
   void OnClear(wxCommandEvent& event);

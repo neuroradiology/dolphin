@@ -37,12 +37,6 @@ extern const std::string scm_distributor_str;
 // Memory leak checks
 #define CHECK_HEAP_INTEGRITY()
 
-// Since they are always around on Windows
-#define HAVE_WX 1
-#define HAVE_OPENAL 1
-
-#define HAVE_PORTAUDIO 1
-
 // Debug definitions
 #if defined(_DEBUG)
 #include <crtdbg.h>
@@ -92,12 +86,4 @@ enum HOST_COMM
   WM_USER_CREATE,
   WM_USER_SETCURSOR,
   WM_USER_JOB_DISPATCH,
-};
-
-// Used for notification on emulation state
-enum EMUSTATE_CHANGE
-{
-  EMUSTATE_CHANGE_PLAY = 1,
-  EMUSTATE_CHANGE_PAUSE,
-  EMUSTATE_CHANGE_STOP
 };
